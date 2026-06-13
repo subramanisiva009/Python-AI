@@ -1,0 +1,136 @@
+from dotenv import load_dotenv
+import os
+import google.generativeai as genai
+from sentence_transformers import SentenceTransformer
+from docx import Document
+import streamlit as st
+import faiss
+import numpy as np
+
+load_dotenv()
+
+genai.configure(
+    api_key=os.getenv("GEMINI_APIKEY")
+)
+
+model = genai.GenerativeModel("gemini-2.5-flash")
+
+st.set_page_config(
+    page_title="RAG Assistant",
+    page_icon="🤖",
+    layout="wide"
+)
+
+st.title("🤖 Gemini RAG Assistant")
+st.caption("Upload a DOCX file and ask questions")
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+uploaded_file = st.file_uploader(
+    "Upload DOCX File",
+    type=["docx"]
+)
+
+if uploaded_file:
+
+    doc = Document(uploaded_file)
+
+    documents = []
+
+    for para in doc.paragraphs:
+        if para.text.strip():
+            documents.append(para.text)
+
+    st.success(f"Loaded {len(documents)} text chunks")
+
+    embedding_model = SentenceTransformer(
+        "all-MiniLM-L6-v2"
+    )
+
+    doc_embeddings = embedding_model.encode(
+        documents
+    )
+
+    dimension = doc_embeddings.shape[1]
+
+    index = faiss.IndexFlatL2(dimension)
+
+    index.add(
+        np.array(doc_embeddings)
+    )
+
+    for msg in st.session_state.messages:
+
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+
+    query = st.chat_input(
+        "Ask a question..."
+    )
+
+    if query:
+
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": query
+            }
+        )
+
+        with st.chat_message("user"):
+            st.write(query)
+
+        with st.spinner("Searching..."):
+
+            query_embedding = embedding_model.encode(
+                [query]
+            )
+
+            distance, result = index.search(
+                np.array(query_embedding),
+                k=3
+            )
+
+            retrieved_text = ""
+
+            for i in result[0]:
+                retrieved_text += documents[i] + "\n"
+
+            prompt = f"""
+Use the following context to answer.
+
+Context:
+{retrieved_text}
+
+Question:
+{query}
+
+Answer clearly and accurately.
+"""
+
+            response = model.generate_content(
+                prompt
+            )
+
+            answer = response.text
+
+        with st.chat_message("assistant"):
+            st.write(answer)
+
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": answer
+            }
+        )
+
+        with st.expander(
+            "🔍 Retrieved Context"
+        ):
+            st.write(retrieved_text)
+
+else:
+    st.info(
+        "Upload a DOCX file to start chatting."
+    )
